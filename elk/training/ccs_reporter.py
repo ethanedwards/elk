@@ -100,6 +100,10 @@ class CcsReporter(Reporter):
         self.neg_norm = Normalizer((in_features,), device=device, dtype=dtype)
         self.pos_norm = Normalizer((in_features,), device=device, dtype=dtype)
 
+        num_norms = 3
+        self.norms = [Normalizer((in_features,), device=device, dtype=dtype) for _ in range(num_norms)]
+
+
         self.probe = nn.Sequential(
             nn.Linear(
                 in_features,
@@ -366,6 +370,210 @@ class CcsReporter(Reporter):
             optimizer.zero_grad()
 
             loss = self.loss(self(x_pos), self(x_neg), labels)
+            regularizer = 0.0
+
+            # We explicitly add L2 regularization to the loss, since LBFGS
+            # doesn't have a weight_decay parameter
+            for param in self.parameters():
+                regularizer += self.config.weight_decay * param.norm() ** 2 / 2
+
+            regularized = loss + regularizer
+            regularized.backward()
+
+            return float(regularized)
+
+        optimizer.step(closure)
+        return float(loss)
+
+
+    def fitnew(
+        self,
+        hiddens: Tensor,
+        labels: Optional[Tensor] = None,
+    ) -> float:
+        """Fit the probe to the contrast pair (neg, pos).
+
+        Args:
+            contrast_pair: A tuple of tensors, (neg, pos), where x0 and x1 are the
+                contrastive representations.
+            labels: The labels of the contrast pair. Defaults to None.
+
+        Returns:
+            best_loss: The best loss obtained.
+
+        Raises:
+            ValueError: If `optimizer` is not "adam" or "lbfgs".
+            RuntimeError: If the best loss is not finite.
+        """
+        #print(hiddens)
+
+        #("Hiddens shape is " + str(hiddens.shape))
+
+        # Loop through the third dimension of hiddens and unbind the tensors
+        x_tensors = [tensor for tensor in hiddens.unbind(2)]
+
+        # Fit normalizers
+        for i in range(3):
+            #print("fitting")
+            self.norms[i].fit(x_tensors[i])
+            #print("fitting finished")
+        #self.pos_norm.fit(x_tensors[0])
+        #self.neg_norm.fit(x_tensors[1])
+
+        # Record the best acc
+        # Record the best acc, loss, and params found so far
+        best_loss = torch.inf
+        best_state: dict[str, Tensor] = {}  # State dict of the best run
+
+        for i in range(self.config.num_tries):
+            self.reset_parameters()
+
+            # This is sort of inefficient but whatever
+            if self.config.init == "pca":
+                #diffs = torch.flatten(x_pos - x_neg, 0, 1)
+                diffs = torch.flatten(1 - torch.sum((x_tensors)), 0, 1)
+                _, __, V = torch.pca_lowrank(diffs, q=i + 1)
+                self.probe[0].weight.data = V[:, -1, None].T
+
+            if self.config.optimizer == "lbfgs":
+                loss = self.trainm_loop_lbfgs(x_tensors, labels)
+                #loss = self.train_loop_lbfgs(x_pos, x_neg, labels)
+            elif self.config.optimizer == "adam":
+                loss = self.trainm_loop_adam(x_tensors, labels)
+                #loss = self.train_loop_adam(x_pos, x_neg, labels)
+            else:
+                raise ValueError(f"Optimizer {self.config.optimizer} is not supported")
+
+            if loss < best_loss:
+                best_loss = loss
+                best_state = deepcopy(self.state_dict())
+
+        if not math.isfinite(best_loss):
+            raise RuntimeError("Got NaN/infinite loss during training")
+
+        self.load_state_dict(best_state)
+        return best_loss
+
+
+
+    def unsupervised_lossm(self, logits: [Tensor]) -> Tensor:
+       
+        #print("name of loss function: " + str(name))
+        loss = sum(
+            LOSSES[name](logits, coef)
+            for name, coef in self.config.loss_dict.items()
+        )
+        
+        return assert_type(Tensor, loss)
+
+
+    def lossm(
+        self,
+        logits: list[Tensor],
+        labels: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Return the loss of the reporter on the contrast set.
+
+        Args:
+            logits: A list of raw score outputs of the reporter, where the first
+                element is the positive term and the rest are negative terms.
+            labels: The labels of the contrast set. Defaults to None.
+
+        Returns:
+            loss: The loss of the reporter on the contrast set.
+
+        Raises:
+            ValueError: If `supervised_weight > 0` but `labels` is None.
+        """
+        loss = self.unsupervised_lossm(logits)
+
+        # If labels are provided, use them to compute a supervised loss
+        if labels is not None:
+            num_labels = len(labels)
+            #print(num_labels)
+            #print(len(logits[0]))
+            #print("shapeys")
+            #print(labels.shape)
+            #print(len(logits))
+            #print(logits[0].shape)
+            assert num_labels <= len(logits[0]), "Too many labels provided"
+            p0 = logits[0][:num_labels].sigmoid()
+            ps = [logit[:num_labels].sigmoid() for logit in logits]
+
+
+            alpha = self.config.supervised_weight
+            #print("ps shape: " + str(ps[0].shape))
+            #print("pss example " + str(ps[0][0]))
+            #print("pss example " + str(ps[1][0]))
+            #print("pss example " + str(ps[2][0]))
+            stacked_tensors = torch.stack(ps, dim=-1)
+            preds, _ = torch.max(stacked_tensors, dim=-1)
+            #p1 = (1-(sum(p_negatives).mul(1/(len(logits)))))
+            #print("p0 shape " + str(p0.shape))
+            #print("p1 shape " + str(p1.shape))
+            #print("combo shape " + str((p0.add((1-p1))).shape))
+            #preds = p0.add(1 - p1).mul(0.5).squeeze(-1)
+            #print("preds " + str(preds.shape))
+            # broadcast the labels, and flatten the predictions
+            # so that both are 1D tensors
+            broadcast_labels = labels.repeat_interleave(preds.shape[1]).float()
+            #print("blabels " + str(broadcast_labels.shape))
+            #print(logits[0][0])
+            flattened_preds = preds.cpu().flatten()
+            bce_loss = bce(flattened_preds, broadcast_labels.type_as(flattened_preds))
+            loss = alpha * bce_loss + (1 - alpha) * loss
+
+        elif self.config.supervised_weight > 0:
+            raise ValueError(
+                "Supervised weight > 0 but no labels provided to compute loss"
+            )
+
+        return loss
+
+    def trainm_loop_adam(
+        self,
+        x_tensors: [Tensor],
+        labels: Optional[Tensor] = None,
+    ) -> float:
+        """Adam train loop, returning the final loss. Modifies params in-place."""
+
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.config.lr, weight_decay=self.config.weight_decay
+        )
+
+        loss = torch.inf
+        for _ in range(self.config.num_epochs):
+            optimizer.zero_grad()
+
+            loss = self.lossm(self(x_tensors), labels)
+            loss.backward()
+            optimizer.step()
+
+        return float(loss)
+
+
+    def trainm_loop_lbfgs(
+        self,
+        x_tensors: [Tensor],
+        labels: Optional[Tensor] = None,
+    ) -> float:
+        """LBFGS train loop, returning the final loss. Modifies params in-place."""
+
+        optimizer = torch.optim.LBFGS(
+            self.parameters(),
+            line_search_fn="strong_wolfe",
+            max_iter=self.config.num_epochs,
+            tolerance_change=torch.finfo(x_tensors[0].dtype).eps,
+            tolerance_grad=torch.finfo(x_tensors[0].dtype).eps,
+        )
+        # Raw unsupervised loss, WITHOUT regularization
+        loss = torch.inf
+
+        def closure():
+            nonlocal loss
+            optimizer.zero_grad()
+            correct_tensors = [self(tense) for tense in x_tensors]
+            loss = self.lossm(correct_tensors, labels)
             regularizer = 0.0
 
             # We explicitly add L2 regularization to the loss, since LBFGS

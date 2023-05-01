@@ -154,3 +154,34 @@ def prompt_var_loss(logit0: Tensor, logit1: Tensor, coef: float = 1.0) -> Tensor
     var1 = p1.var(dim=-1, unbiased=False).mean()
     prompt_variance = var0 + var1
     return coef * prompt_variance
+
+
+
+# @register("consistency_squared")
+# def consistency_squared_loss(
+#     logits: [Tensor],
+#     coef: float = 1.0,
+# ) -> Tensor:
+#     """Negation consistency loss based on the squared difference between the
+#     positive distribution and the negative distributions."""
+#     #p0 = logits[0].sigmoid()
+#     #p1 = (1 - torch.stack([logit.sigmoid() for logit in logits[1:]]).mean(dim=0))
+#     ps = sum(tensor.sigmoid() for tensor in logits)
+#     term = 1 - ps
+#     return coef * term.square().mean()
+
+
+# @register("confidence_squared")
+# def confidence_squared_loss(
+#     logits: [Tensor],
+#     coef: float = 1.0,
+# ) -> Tensor:
+#     """Confidence loss based on the squared difference between the positive and negative distributions."""
+#     p = torch.stack([logit.sigmoid() for logit in logits])
+#     #print("CONFIDENCE LOSS")
+#     #Advice from Adit
+#     #min_p = -pow(torch.max(p),2)
+#     #Try changing to min
+#     min_p = -pow(torch.min(p), 2)
+#     #Should this actually be min?
+#     return coef * min_p
