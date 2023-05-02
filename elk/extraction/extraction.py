@@ -100,6 +100,11 @@ class Extract(Serializable):
     case of encoder-decoder models."""
 
     def __post_init__(self, layer_stride: int):
+        if len(self.datasets) == 0:
+            raise ValueError(
+                "Must specify at least one dataset to extract hiddens from."
+            )
+
         if len(self.max_examples) > 2:
             raise ValueError(
                 "max_examples should be a list of length 0, 1, or 2,"
@@ -344,7 +349,11 @@ def hidden_features(cfg: Extract) -> tuple[DatasetInfo, Features]:
 
     ds_features = assert_type(Features, info.features)
     label_col = prompter.label_column or infer_label_column(ds_features)
-    num_classes = 2 if cfg.binarize else infer_num_classes(ds_features[label_col])
+    num_classes = (
+        2
+        if cfg.binarize or prompter.binarize
+        else infer_num_classes(ds_features[label_col])
+    )
 
     num_variants = cfg.num_variants
     if num_variants < 0:
