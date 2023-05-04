@@ -70,12 +70,12 @@ class Elicit(Run):
             train_loss = reporter.fit(first_train_h, train_labels)
 
             (val_h, val_gt, _) = next(iter(val_dict.values()))
-            x0, x1 = first_train_h.unbind(2)
-            val_x0, val_x1 = val_h.unbind(2)
-            pseudo_auroc = reporter.check_separability(
-                train_pair=(x0, x1),
-                val_pair=(val_x0, val_x1),
-            )
+            #x0, x1 = first_train_h.unbind(2)
+            #val_x0, val_x1 = val_h.unbind(2)
+            #pseudo_auroc = reporter.check_separability(
+            #    train_pair=(x0, x1),
+            #    val_pair=(val_x0, val_x1),
+            #)
 
         elif isinstance(self.net, EigenReporterConfig):
             # We set num_classes to None to enable training on datasets with different

@@ -108,7 +108,7 @@ class CcsReporter(Reporter):
             dtype=dtype,
         )
 
-        num_norms = 3
+        num_norms = 4
         self.norms = [Normalizer((in_features,), device=device, dtype=dtype) for _ in range(num_norms)]
 
 
@@ -289,7 +289,7 @@ class CcsReporter(Reporter):
 
         return loss
 
-    def fit(
+    def fitold(
         self,
         hiddens: Tensor,
         labels: Optional[Tensor] = None,
@@ -407,7 +407,7 @@ class CcsReporter(Reporter):
         return float(loss)
 
 
-    def fitnew(
+    def fit(
         self,
         hiddens: Tensor,
         labels: Optional[Tensor] = None,
@@ -432,14 +432,19 @@ class CcsReporter(Reporter):
 
         # Loop through the third dimension of hiddens and unbind the tensors
         x_tensors = [tensor for tensor in hiddens.unbind(2)]
-
+        print(labels)
+        print("Length " + str(len(x_tensors)))
+        print("Shape " + str(x_tensors[0].shape))
         # Fit normalizers
-        for i in range(3):
+        #self.neg_norm.fit(x_neg)
+        #self.pos_norm.fit(x_pos)
+        #x_neg, x_pos = self.neg_norm(x_neg), self.pos_norm(x_pos)
+
+        for i in range(4):
             #print("fitting")
             self.norms[i].fit(x_tensors[i])
             #print("fitting finished")
-        #self.pos_norm.fit(x_tensors[0])
-        #self.neg_norm.fit(x_tensors[1])
+        x_tensors = [self.norms[i](x_tensors[i]) for i in range(len(x_tensors))]
 
         # Record the best acc
         # Record the best acc, loss, and params found so far
@@ -511,32 +516,14 @@ class CcsReporter(Reporter):
         # If labels are provided, use them to compute a supervised loss
         if labels is not None:
             num_labels = len(labels)
-            #print(num_labels)
-            #print(len(logits[0]))
-            #print("shapeys")
-            #print(labels.shape)
-            #print(len(logits))
-            #print(logits[0].shape)
             assert num_labels <= len(logits[0]), "Too many labels provided"
             p0 = logits[0][:num_labels].sigmoid()
             ps = [logit[:num_labels].sigmoid() for logit in logits]
 
 
             alpha = self.config.supervised_weight
-            #print("ps shape: " + str(ps[0].shape))
-            #print("pss example " + str(ps[0][0]))
-            #print("pss example " + str(ps[1][0]))
-            #print("pss example " + str(ps[2][0]))
             stacked_tensors = torch.stack(ps, dim=-1)
             preds, _ = torch.max(stacked_tensors, dim=-1)
-            #p1 = (1-(sum(p_negatives).mul(1/(len(logits)))))
-            #print("p0 shape " + str(p0.shape))
-            #print("p1 shape " + str(p1.shape))
-            #print("combo shape " + str((p0.add((1-p1))).shape))
-            #preds = p0.add(1 - p1).mul(0.5).squeeze(-1)
-            #print("preds " + str(preds.shape))
-            # broadcast the labels, and flatten the predictions
-            # so that both are 1D tensors
             broadcast_labels = labels.repeat_interleave(preds.shape[1]).float()
             #print("blabels " + str(broadcast_labels.shape))
             #print(logits[0][0])
